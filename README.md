@@ -4,7 +4,8 @@ Built-in AI Vision Sensor berbasis web — Frontend GitHub Pages, Backend Supaba
 Hugging Face. Meniru alur operasional Keyence IV4 series built-in AI (Program → Mastering →
 Add Tools/Auto Learning → Save Tools/Learn → Level Adjustment → Mode Running → Result OK/NG).
 
-**Developer:** Prihatin Purwadi, M.Pd. — PT. Yasashi Teknik (Yasashi Electric)
+**Developer:** Prihatin Purwadi, M.Pd. 
+Customer For : PT. Yasashi Teknik (Yasashi Electric)
 
 ## Dokumen Referensi
 - `docs/Yasashi_Camera_V1.0_PRD.pdf` — Product Requirements Document lengkap.
