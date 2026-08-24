@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { supabase } from "../../../lib/supabaseClient";
+import { describeFunctionError } from "../../../lib/functionsError";
 import { useAuth } from "../../../context/AuthContext.jsx";
 import { getToolMeta, getToolThresholdForm } from "../../../ai-tools/registry";
 import CaptureBox from "../../../components/Camera/CaptureBox.jsx";
@@ -92,7 +93,7 @@ function LivePreviewTester({ program }) {
       if (error) throw error;
       setResult(data);
     } catch (err) {
-      setError(err.message || "AI Engine sedang warming up, coba lagi beberapa detik lagi.");
+      setError(await describeFunctionError(err));
     } finally {
       setTesting(false);
     }

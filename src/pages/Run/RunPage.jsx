@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { supabase } from "../../lib/supabaseClient";
+import { describeFunctionError } from "../../lib/functionsError";
 import { useAuth } from "../../context/AuthContext.jsx";
 import { useCamera } from "../../hooks/useCamera.js";
 import { useWebSerial } from "../../hooks/useWebSerial.js";
@@ -108,7 +109,7 @@ export default function RunPage() {
         });
         setResult((prev) => ({ ...prev, ioResults }));
       } catch (err) {
-        setError(err.message || "Gagal menjalankan AI Inference.");
+        setError(await describeFunctionError(err));
       } finally {
         setRunning(false);
       }
