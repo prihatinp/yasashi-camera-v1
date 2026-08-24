@@ -18,6 +18,8 @@
 
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createWorker } from "npm:tesseract.js@5.1.1";
+import { compareImages } from "./imageSimilarity.ts";
 
 // ---------------------------------------------------------------------
 // KONFIGURASI
@@ -29,20 +31,18 @@ const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 // Model Hugging Face per AI Tool. HF sering mengubah daftar model yang didukung
 // provider "hf-inference" gratis mereka, jadi tiap tugas punya beberapa kandidat
 // cadangan — hfRequestWithFallback() coba satu-satu sampai ada yang berhasil.
+//
+// Catatan: image-feature-extraction & image-to-text sudah TIDAK didukung lagi
+// oleh provider gratis hf-inference (dicek langsung di huggingface.co/models,
+// hasilnya kosong) — Differentiate/Identify pakai perbandingan gambar klasik
+// (imageSimilarity.ts) dan OCR pakai Tesseract.js, bukan Hugging Face lagi.
+// Object detection masih didukung sehingga Count/Trigger/Through Count tetap
+// pakai Hugging Face.
 const HF_MODELS = {
-  embedding: [
-    "google/vit-base-patch16-224-in21k",
-    "facebook/dinov2-base",
-    "openai/clip-vit-base-patch32",
-  ], // Differentiate & Identify (image feature-extraction untuk similarity)
   detection: [
     "facebook/detr-resnet-50",
     "hustvl/yolos-tiny",
   ], // Count / Through Count / Trigger (object detection)
-  ocr: [
-    "microsoft/trocr-base-printed",
-    "microsoft/trocr-small-printed",
-  ], // AI OCR (image-to-text)
 };
 
 // api-inference.huggingface.co (legacy) sudah dimatikan Hugging Face — pakai
@@ -132,25 +132,38 @@ serve(async (req: Request) => {
     const toolResults: ToolResult[] = [];
     for (const tool of tools) {
       let result: Omit<ToolResult, "program_tool_id" | "ai_tool">;
-      switch (tool.ai_tool) {
-        case "differentiate":
-          result = await runDifferentiate(tool, body.image_base64);
-          break;
-        case "identify":
-          result = await runIdentify(tool, body.image_base64);
-          break;
-        case "count":
-        case "through_count":
-          result = await runCount(tool, body.image_base64);
-          break;
-        case "ocr":
-          result = await runOCR(tool, body.image_base64);
-          break;
-        case "trigger":
-          result = await runTrigger(tool, body.image_base64);
-          break;
-        default:
-          result = { hasil: "UNKNOWN", confidence: null, count_value: null, ocr_text: null, extra_data: {} };
+      try {
+        switch (tool.ai_tool) {
+          case "differentiate":
+            result = await runDifferentiate(tool, body.image_base64);
+            break;
+          case "identify":
+            result = await runIdentify(tool, body.image_base64);
+            break;
+          case "count":
+          case "through_count":
+            result = await runCount(tool, body.image_base64);
+            break;
+          case "ocr":
+            result = await runOCR(tool, body.image_base64);
+            break;
+          case "trigger":
+            result = await runTrigger(tool, body.image_base64);
+            break;
+          default:
+            result = { hasil: "UNKNOWN", confidence: null, count_value: null, ocr_text: null, extra_data: {} };
+        }
+      } catch (err) {
+        // Satu Tool gagal (mis. cold-start Tesseract) tidak boleh menggagalkan
+        // seluruh Run — tool lain dalam Program yang sama tetap harus jalan.
+        console.error(`Tool ${tool.ai_tool} (${tool.id}) gagal:`, (err as Error).message);
+        result = {
+          hasil: "UNKNOWN",
+          confidence: null,
+          count_value: null,
+          ocr_text: null,
+          extra_data: { error: (err as Error).message },
+        };
       }
       toolResults.push({ program_tool_id: tool.id, ai_tool: tool.ai_tool, ...result });
     }
@@ -234,9 +247,9 @@ async function runDifferentiate(tool: any, imageBase64: string) {
     throw new Error("Tool Differentiate belum punya reference image (selesaikan Save Tools/Learn dahulu)");
   }
 
-  const ref = await getEmbeddingFromStoragePath(tool.reference_image_url);
-  const current = await getEmbeddingFromBase64(imageBase64);
-  const similarity = cosineSimilarity(ref.embedding, current.embedding);
+  const refBytes = await downloadReferenceBytes(tool.reference_image_url);
+  const currentBytes = base64ToUint8Array(imageBase64);
+  const similarity = compareImages(refBytes, currentBytes);
 
   const minSimilarity = tool.threshold?.similarity_min ?? 0.85; // hasil Level Adjustment
   const hasil = similarity >= minSimilarity ? "OK" : "NG";
@@ -246,7 +259,7 @@ async function runDifferentiate(tool: any, imageBase64: string) {
     confidence: round4(similarity),
     count_value: null,
     ocr_text: null,
-    extra_data: { similarity, min_similarity: minSimilarity, model: current.model },
+    extra_data: { similarity, min_similarity: minSimilarity, method: "ssim" },
   };
 }
 
@@ -259,13 +272,13 @@ async function runIdentify(tool: any, imageBase64: string) {
     throw new Error("Tool Identify butuh minimal 1 reference_image_urls (label + url)");
   }
 
-  const current = await getEmbeddingFromBase64(imageBase64);
+  const currentBytes = base64ToUint8Array(imageBase64);
 
   let bestLabel = "UNKNOWN";
   let bestScore = -1;
   for (const ref of refs) {
-    const refEmbedding = await getEmbeddingFromStoragePath(ref.url);
-    const score = cosineSimilarity(refEmbedding.embedding, current.embedding);
+    const refBytes = await downloadReferenceBytes(ref.url);
+    const score = compareImages(refBytes, currentBytes);
     if (score > bestScore) {
       bestScore = score;
       bestLabel = ref.label;
@@ -280,7 +293,7 @@ async function runIdentify(tool: any, imageBase64: string) {
     confidence: round4(bestScore),
     count_value: null,
     ocr_text: null,
-    extra_data: { matched_label: bestLabel, score: bestScore, model: current.model },
+    extra_data: { matched_label: bestLabel, score: bestScore, method: "ssim" },
   };
 }
 
@@ -317,7 +330,8 @@ async function runCount(tool: any, imageBase64: string) {
 // AI TOOL: OCR
 // =====================================================================
 async function runOCR(tool: any, imageBase64: string) {
-  const { text, model } = await hfImageToText(imageBase64);
+  const bytes = base64ToUint8Array(imageBase64);
+  const text = await runTesseractOCR(bytes);
 
   const expectedPattern: string | undefined = tool.threshold?.expected_pattern;
   let hasil: "OK" | "NG" | "UNKNOWN" = "UNKNOWN";
@@ -334,7 +348,7 @@ async function runOCR(tool: any, imageBase64: string) {
     confidence: null,
     count_value: null,
     ocr_text: text,
-    extra_data: { model, expected_pattern: expectedPattern ?? null },
+    extra_data: { engine: "tesseract.js", expected_pattern: expectedPattern ?? null },
   };
 }
 
@@ -403,18 +417,10 @@ async function hfRequestWithFallback(
   throw lastError ?? new Error("Tidak ada model Hugging Face yang berhasil dipanggil.");
 }
 
-async function getEmbeddingFromBase64(imageBase64: string): Promise<{ embedding: number[]; model: string }> {
-  const bytes = base64ToUint8Array(imageBase64);
-  const { result, model } = await hfRequestWithFallback(HF_MODELS.embedding, bytes);
-  return { embedding: meanPoolEmbedding(result), model };
-}
-
-async function getEmbeddingFromStoragePath(path: string): Promise<{ embedding: number[]; model: string }> {
+async function downloadReferenceBytes(path: string): Promise<Uint8Array> {
   const { data, error } = await supabase.storage.from("reference-images").download(path);
   if (error || !data) throw new Error(`Gagal ambil reference image: ${error?.message}`);
-  const bytes = new Uint8Array(await data.arrayBuffer());
-  const { result, model } = await hfRequestWithFallback(HF_MODELS.embedding, bytes);
-  return { embedding: meanPoolEmbedding(result), model };
+  return new Uint8Array(await data.arrayBuffer());
 }
 
 async function hfDetectObjects(
@@ -425,41 +431,31 @@ async function hfDetectObjects(
   return { detections: (result as any[]).map((r) => ({ label: r.label, score: r.score })), model };
 }
 
-async function hfImageToText(imageBase64: string): Promise<{ text: string; model: string }> {
-  const bytes = base64ToUint8Array(imageBase64);
-  const { result, model } = await hfRequestWithFallback(HF_MODELS.ocr, bytes);
-  return { text: (result as any[])[0]?.generated_text ?? "", model };
+// =====================================================================
+// OCR: Tesseract.js (WASM, jalan langsung di Edge Function, tanpa API luar)
+// Worker di-cache di module scope supaya instance Edge Function yang "warm"
+// tidak perlu re-init tiap request.
+// =====================================================================
+let tesseractWorkerPromise: ReturnType<typeof createWorker> | null = null;
+
+async function getTesseractWorker() {
+  if (!tesseractWorkerPromise) {
+    tesseractWorkerPromise = createWorker("eng");
+  }
+  return tesseractWorkerPromise;
+}
+
+async function runTesseractOCR(bytes: Uint8Array): Promise<string> {
+  const worker = await getTesseractWorker();
+  const {
+    data: { text },
+  } = await worker.recognize(bytes);
+  return text.trim();
 }
 
 // =====================================================================
 // HELPER: UTILITAS UMUM
 // =====================================================================
-function meanPoolEmbedding(raw: unknown): number[] {
-  const arr = raw as number[] | number[][];
-  if (Array.isArray(arr[0])) {
-    const tokens = arr as number[][];
-    const dims = tokens[0].length;
-    const pooled = new Array(dims).fill(0);
-    for (const t of tokens) {
-      for (let i = 0; i < dims; i++) pooled[i] += t[i];
-    }
-    return pooled.map((v) => v / tokens.length);
-  }
-  return arr as number[];
-}
-
-function cosineSimilarity(a: number[], b: number[]): number {
-  const len = Math.min(a.length, b.length);
-  let dot = 0, normA = 0, normB = 0;
-  for (let i = 0; i < len; i++) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-  if (normA === 0 || normB === 0) return 0;
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
-}
-
 function base64ToUint8Array(base64: string): Uint8Array {
   const clean = base64.includes(",") ? base64.split(",")[1] : base64;
   const binary = atob(clean);
