@@ -28,7 +28,15 @@ export default function RunPage() {
   const [error, setError] = useState("");
   const imgRef = useRef(null);
 
-  const { videoRef, ready, captureFrame } = useCamera({
+  const {
+    videoRef,
+    ready,
+    captureFrame,
+    on: cameraOn,
+    toggleOn: toggleCameraOn,
+    facingMode,
+    switchFacing,
+  } = useCamera({
     source: program?.camera_source ?? "webcam",
     streamUrl: program?.camera_connection?.stream_url ?? "",
   });
@@ -176,7 +184,7 @@ export default function RunPage() {
       </div>
 
       <div className="card space-y-4">
-        <div className="aspect-video rounded-xl overflow-hidden bg-black">
+        <div className="relative aspect-video rounded-xl overflow-hidden bg-black">
           {inputMode === "camera" ? (
             <CameraView
               source={program.camera_source}
@@ -187,7 +195,30 @@ export default function RunPage() {
           ) : (
             <img ref={imgRef} alt="Gambar dari Image Library" className="w-full h-full object-contain bg-black" />
           )}
+          {inputMode === "camera" && !cameraOn && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black/85 text-white text-sm">
+              📷 Kamera nonaktif
+            </div>
+          )}
         </div>
+
+        {inputMode === "camera" && (
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" className="btn-secondary !py-1.5 text-sm" onClick={toggleCameraOn}>
+              {cameraOn ? "⏻ Kamera OFF" : "⏻ Kamera ON"}
+            </button>
+            {program.camera_source !== "ethernet" && (
+              <button
+                type="button"
+                className="btn-secondary !py-1.5 text-sm"
+                onClick={switchFacing}
+                disabled={!cameraOn}
+              >
+                🔄 Ganti ke {facingMode === "user" ? "Belakang" : "Depan"}
+              </button>
+            )}
+          </div>
+        )}
 
         {inputMode === "library" && (
           <button className="btn-secondary" onClick={() => setShowPicker(true)}>

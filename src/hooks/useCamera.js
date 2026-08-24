@@ -2,24 +2,32 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
  * Mengelola live preview kamera. Mendukung:
- * - "webcam" / "usb": getUserMedia (video element)
+ * - "webcam" / "usb": getUserMedia (video element), termasuk ganti kamera depan/belakang di HP
  * - "ethernet": MJPEG/HTTP stream URL (img element, browser refresh sendiri per multipart frame)
  */
-export function useCamera({ source = "webcam", streamUrl = "" } = {}) {
+export function useCamera({ source = "webcam", streamUrl = "", facingMode: initialFacingMode = "environment" } = {}) {
   const videoRef = useRef(null);
   const streamObjRef = useRef(null);
   const [error, setError] = useState("");
   const [ready, setReady] = useState(false);
+  const [on, setOn] = useState(true);
+  const [facingMode, setFacingMode] = useState(initialFacingMode);
 
   const stop = useCallback(() => {
     streamObjRef.current?.getTracks().forEach((t) => t.stop());
     streamObjRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
     setReady(false);
   }, []);
 
   useEffect(() => {
     if (source === "ethernet") {
-      setReady(!!streamUrl);
+      setReady(!!streamUrl && on);
+      return () => {};
+    }
+
+    if (!on) {
+      stop();
       return () => {};
     }
 
@@ -34,7 +42,11 @@ export function useCamera({ source = "webcam", streamUrl = "" } = {}) {
       }
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+          video: {
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            facingMode: { ideal: facingMode },
+          },
           audio: false,
         });
         if (cancelled) {
@@ -58,7 +70,7 @@ export function useCamera({ source = "webcam", streamUrl = "" } = {}) {
       stop();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source, streamUrl]);
+  }, [source, streamUrl, facingMode, on]);
 
   /** Ambil 1 frame -> dataURL base64 JPEG (dikompres) */
   const captureFrame = useCallback(
@@ -81,5 +93,11 @@ export function useCamera({ source = "webcam", streamUrl = "" } = {}) {
     [source],
   );
 
-  return { videoRef, ready, error, captureFrame, stop };
+  const toggleOn = useCallback(() => setOn((v) => !v), []);
+  const switchFacing = useCallback(
+    () => setFacingMode((f) => (f === "user" ? "environment" : "user")),
+    [],
+  );
+
+  return { videoRef, ready, error, captureFrame, stop, on, toggleOn, facingMode, switchFacing };
 }
