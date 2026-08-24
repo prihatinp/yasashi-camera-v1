@@ -26,11 +26,23 @@ const HF_API_TOKEN = Deno.env.get("HF_API_TOKEN")!;
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-// Model Hugging Face per AI Tool (semua tersedia di free Inference API).
+// Model Hugging Face per AI Tool. HF sering mengubah daftar model yang didukung
+// provider "hf-inference" gratis mereka, jadi tiap tugas punya beberapa kandidat
+// cadangan — hfRequestWithFallback() coba satu-satu sampai ada yang berhasil.
 const HF_MODELS = {
-  embedding: "facebook/dinov2-base",       // Differentiate & Identify (image similarity)
-  detection: "facebook/detr-resnet-50",    // Count / Through Count / Trigger (object detection)
-  ocr: "microsoft/trocr-base-printed",     // OCR (image-to-text)
+  embedding: [
+    "google/vit-base-patch16-224-in21k",
+    "facebook/dinov2-base",
+    "openai/clip-vit-base-patch32",
+  ], // Differentiate & Identify (image feature-extraction untuk similarity)
+  detection: [
+    "facebook/detr-resnet-50",
+    "hustvl/yolos-tiny",
+  ], // Count / Through Count / Trigger (object detection)
+  ocr: [
+    "microsoft/trocr-base-printed",
+    "microsoft/trocr-small-printed",
+  ], // AI OCR (image-to-text)
 };
 
 // api-inference.huggingface.co (legacy) sudah dimatikan Hugging Face — pakai
@@ -222,9 +234,9 @@ async function runDifferentiate(tool: any, imageBase64: string) {
     throw new Error("Tool Differentiate belum punya reference image (selesaikan Save Tools/Learn dahulu)");
   }
 
-  const refEmbedding = await getEmbeddingFromStoragePath(tool.reference_image_url);
-  const currentEmbedding = await getEmbeddingFromBase64(imageBase64);
-  const similarity = cosineSimilarity(refEmbedding, currentEmbedding);
+  const ref = await getEmbeddingFromStoragePath(tool.reference_image_url);
+  const current = await getEmbeddingFromBase64(imageBase64);
+  const similarity = cosineSimilarity(ref.embedding, current.embedding);
 
   const minSimilarity = tool.threshold?.similarity_min ?? 0.85; // hasil Level Adjustment
   const hasil = similarity >= minSimilarity ? "OK" : "NG";
@@ -234,7 +246,7 @@ async function runDifferentiate(tool: any, imageBase64: string) {
     confidence: round4(similarity),
     count_value: null,
     ocr_text: null,
-    extra_data: { similarity, min_similarity: minSimilarity, model: HF_MODELS.embedding },
+    extra_data: { similarity, min_similarity: minSimilarity, model: current.model },
   };
 }
 
@@ -247,13 +259,13 @@ async function runIdentify(tool: any, imageBase64: string) {
     throw new Error("Tool Identify butuh minimal 1 reference_image_urls (label + url)");
   }
 
-  const currentEmbedding = await getEmbeddingFromBase64(imageBase64);
+  const current = await getEmbeddingFromBase64(imageBase64);
 
   let bestLabel = "UNKNOWN";
   let bestScore = -1;
   for (const ref of refs) {
     const refEmbedding = await getEmbeddingFromStoragePath(ref.url);
-    const score = cosineSimilarity(refEmbedding, currentEmbedding);
+    const score = cosineSimilarity(refEmbedding.embedding, current.embedding);
     if (score > bestScore) {
       bestScore = score;
       bestLabel = ref.label;
@@ -268,7 +280,7 @@ async function runIdentify(tool: any, imageBase64: string) {
     confidence: round4(bestScore),
     count_value: null,
     ocr_text: null,
-    extra_data: { matched_label: bestLabel, score: bestScore, model: HF_MODELS.embedding },
+    extra_data: { matched_label: bestLabel, score: bestScore, model: current.model },
   };
 }
 
@@ -276,7 +288,7 @@ async function runIdentify(tool: any, imageBase64: string) {
 // AI TOOL: COUNT / THROUGH COUNT
 // =====================================================================
 async function runCount(tool: any, imageBase64: string) {
-  const detections = await hfDetectObjects(imageBase64);
+  const { detections, model } = await hfDetectObjects(imageBase64);
 
   const minScore = tool.threshold?.detection_min_score ?? 0.6;
   const filtered = detections.filter((d) => d.score >= minScore);
@@ -297,7 +309,7 @@ async function runCount(tool: any, imageBase64: string) {
       : null,
     count_value: count,
     ocr_text: null,
-    extra_data: { detections: filtered, model: HF_MODELS.detection },
+    extra_data: { detections: filtered, model },
   };
 }
 
@@ -305,7 +317,7 @@ async function runCount(tool: any, imageBase64: string) {
 // AI TOOL: OCR
 // =====================================================================
 async function runOCR(tool: any, imageBase64: string) {
-  const text = await hfImageToText(imageBase64);
+  const { text, model } = await hfImageToText(imageBase64);
 
   const expectedPattern: string | undefined = tool.threshold?.expected_pattern;
   let hasil: "OK" | "NG" | "UNKNOWN" = "UNKNOWN";
@@ -322,7 +334,7 @@ async function runOCR(tool: any, imageBase64: string) {
     confidence: null,
     count_value: null,
     ocr_text: text,
-    extra_data: { model: HF_MODELS.ocr, expected_pattern: expectedPattern ?? null },
+    extra_data: { model, expected_pattern: expectedPattern ?? null },
   };
 }
 
@@ -330,7 +342,7 @@ async function runOCR(tool: any, imageBase64: string) {
 // AI TOOL: TRIGGER (deteksi kehadiran objek)
 // =====================================================================
 async function runTrigger(tool: any, imageBase64: string) {
-  const detections = await hfDetectObjects(imageBase64);
+  const { detections, model } = await hfDetectObjects(imageBase64);
   const minScore = tool.threshold?.detection_min_score ?? 0.5;
   const present = detections.some((d) => d.score >= minScore);
 
@@ -339,7 +351,7 @@ async function runTrigger(tool: any, imageBase64: string) {
     confidence: detections.length ? round4(Math.max(...detections.map((d) => d.score))) : null,
     count_value: detections.length,
     ocr_text: null,
-    extra_data: { present, model: HF_MODELS.detection },
+    extra_data: { present, model },
   };
 }
 
@@ -368,30 +380,55 @@ async function hfRequest(model: string, body: Uint8Array | Record<string, unknow
   return res.json();
 }
 
-async function getEmbeddingFromBase64(imageBase64: string): Promise<number[]> {
-  const bytes = base64ToUint8Array(imageBase64);
-  const result = await hfRequest(HF_MODELS.embedding, bytes);
-  return meanPoolEmbedding(result);
+/**
+ * Coba tiap model kandidat berurutan sampai ada yang berhasil (2xx). HF sering
+ * mengubah daftar model yang didukung provider gratis "hf-inference", jadi satu
+ * model bisa tiba-tiba menghasilkan "Model not supported by provider" — model
+ * berikutnya di daftar akan dicoba secara otomatis. Melempar error terakhir jika
+ * semua kandidat gagal.
+ */
+async function hfRequestWithFallback(
+  models: string[],
+  body: Uint8Array | Record<string, unknown>,
+): Promise<{ result: unknown; model: string }> {
+  let lastError: Error | null = null;
+  for (const model of models) {
+    try {
+      const result = await hfRequest(model, body);
+      return { result, model };
+    } catch (err) {
+      lastError = err as Error;
+    }
+  }
+  throw lastError ?? new Error("Tidak ada model Hugging Face yang berhasil dipanggil.");
 }
 
-async function getEmbeddingFromStoragePath(path: string): Promise<number[]> {
+async function getEmbeddingFromBase64(imageBase64: string): Promise<{ embedding: number[]; model: string }> {
+  const bytes = base64ToUint8Array(imageBase64);
+  const { result, model } = await hfRequestWithFallback(HF_MODELS.embedding, bytes);
+  return { embedding: meanPoolEmbedding(result), model };
+}
+
+async function getEmbeddingFromStoragePath(path: string): Promise<{ embedding: number[]; model: string }> {
   const { data, error } = await supabase.storage.from("reference-images").download(path);
   if (error || !data) throw new Error(`Gagal ambil reference image: ${error?.message}`);
   const bytes = new Uint8Array(await data.arrayBuffer());
-  const result = await hfRequest(HF_MODELS.embedding, bytes);
-  return meanPoolEmbedding(result);
+  const { result, model } = await hfRequestWithFallback(HF_MODELS.embedding, bytes);
+  return { embedding: meanPoolEmbedding(result), model };
 }
 
-async function hfDetectObjects(imageBase64: string): Promise<{ label: string; score: number }[]> {
+async function hfDetectObjects(
+  imageBase64: string,
+): Promise<{ detections: { label: string; score: number }[]; model: string }> {
   const bytes = base64ToUint8Array(imageBase64);
-  const result = await hfRequest(HF_MODELS.detection, bytes);
-  return (result as any[]).map((r) => ({ label: r.label, score: r.score }));
+  const { result, model } = await hfRequestWithFallback(HF_MODELS.detection, bytes);
+  return { detections: (result as any[]).map((r) => ({ label: r.label, score: r.score })), model };
 }
 
-async function hfImageToText(imageBase64: string): Promise<string> {
+async function hfImageToText(imageBase64: string): Promise<{ text: string; model: string }> {
   const bytes = base64ToUint8Array(imageBase64);
-  const result = await hfRequest(HF_MODELS.ocr, bytes);
-  return (result as any[])[0]?.generated_text ?? "";
+  const { result, model } = await hfRequestWithFallback(HF_MODELS.ocr, bytes);
+  return { text: (result as any[])[0]?.generated_text ?? "", model };
 }
 
 // =====================================================================
