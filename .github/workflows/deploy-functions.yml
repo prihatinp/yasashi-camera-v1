@@ -1,0 +1,53 @@
+name: Deploy Supabase Edge Functions
+
+# Deploy supabase/functions/* ke project Supabase. Dijalankan lewat GitHub Actions
+# karena beberapa lingkungan development (mis. sandbox Claude Code) tidak punya akses
+# jaringan langsung ke api.supabase.com.
+#
+# Wajib diisi di Settings > Secrets and variables > Actions:
+#   SUPABASE_ACCESS_TOKEN  -> Personal access token dari supabase.com/dashboard/account/tokens
+#   HF_API_TOKEN           -> Hugging Face token (read scope), akan di-set sbg secret Edge Function
+#
+# Project ref Supabase (bukan rahasia, aman ditulis di sini):
+#   arnwsldopemkyteojzpy
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "supabase/functions/**"
+      - ".github/workflows/deploy-functions.yml"
+  workflow_dispatch:
+
+env:
+  SUPABASE_PROJECT_REF: arnwsldopemkyteojzpy
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Deploy ai-inference Edge Function
+        run: supabase functions deploy ai-inference --project-ref "$SUPABASE_PROJECT_REF"
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+
+      - name: Deploy plc-io Edge Function
+        if: hashFiles('supabase/functions/plc-io/index.ts') != ''
+        run: supabase functions deploy plc-io --project-ref "$SUPABASE_PROJECT_REF"
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+
+      - name: Set HF_API_TOKEN secret
+        if: ${{ secrets.HF_API_TOKEN != '' }}
+        run: supabase secrets set "HF_API_TOKEN=$HF_API_TOKEN" --project-ref "$SUPABASE_PROJECT_REF"
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          HF_API_TOKEN: ${{ secrets.HF_API_TOKEN }}
