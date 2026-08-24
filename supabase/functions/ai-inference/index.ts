@@ -19,7 +19,9 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { createWorker } from "npm:tesseract.js@5.1.1";
-import { compareImages } from "./imageSimilarity.ts";
+import { compareImages, cropRgba, decodeImageToRgba, encodeRgbaToJpeg, type Roi } from "./imageSimilarity.ts";
+import { correctRoiPosition } from "./positionCorrection.ts";
+import { readBarcodeOrQr } from "./barcodeReader.ts";
 
 // ---------------------------------------------------------------------
 // KONFIGURASI
@@ -99,7 +101,7 @@ serve(async (req: Request) => {
     // 1) Ambil konfigurasi Program (decision_logic, organisasi, dll)
     const { data: program, error: programErr } = await supabase
       .from("programs")
-      .select("id, organisasi_id, decision_logic, trigger_mode, is_ready_to_run")
+      .select("id, organisasi_id, decision_logic, trigger_mode, is_ready_to_run, master_image_url")
       .eq("id", body.program_id)
       .single();
 
@@ -129,26 +131,31 @@ serve(async (req: Request) => {
     }
 
     // 3) Jalankan SETIAP tool secara berurutan, kumpulkan hasil per-tool
+    const rawCurrentBytes = base64ToUint8Array(body.image_base64);
     const toolResults: ToolResult[] = [];
     for (const tool of tools) {
       let result: Omit<ToolResult, "program_tool_id" | "ai_tool">;
       try {
+        const workingBytes = await resolveWorkingImage(program, tool, rawCurrentBytes);
         switch (tool.ai_tool) {
           case "differentiate":
-            result = await runDifferentiate(tool, body.image_base64);
+            result = await runDifferentiate(tool, workingBytes);
             break;
           case "identify":
-            result = await runIdentify(tool, body.image_base64);
+            result = await runIdentify(tool, workingBytes);
             break;
           case "count":
           case "through_count":
-            result = await runCount(tool, body.image_base64);
+            result = await runCount(tool, workingBytes);
             break;
           case "ocr":
-            result = await runOCR(tool, body.image_base64);
+            result = await runOCR(tool, workingBytes);
             break;
           case "trigger":
-            result = await runTrigger(tool, body.image_base64);
+            result = await runTrigger(tool, workingBytes);
+            break;
+          case "barcode":
+            result = await runBarcode(tool, workingBytes);
             break;
           default:
             result = { hasil: "UNKNOWN", confidence: null, count_value: null, ocr_text: null, extra_data: {} };
@@ -176,7 +183,7 @@ serve(async (req: Request) => {
     const imagePath = `${program.organisasi_id}/${program.id}/${crypto.randomUUID()}.jpg`;
     const { error: uploadErr } = await supabase.storage
       .from("inspection-images")
-      .upload(imagePath, base64ToUint8Array(body.image_base64), { contentType: "image/jpeg" });
+      .upload(imagePath, rawCurrentBytes, { contentType: "image/jpeg" });
     const imageUrl = uploadErr ? null : imagePath;
 
     // 6) Simpan log akhir (inspection_logs) + rincian per tool (inspection_log_tool_results)
@@ -240,15 +247,47 @@ function combineResults(results: ToolResult[], mode: string): "OK" | "NG" | "UNK
 }
 
 // =====================================================================
+// SIAPKAN GAMBAR KERJA PER TOOL: crop ke ROI (+ Position Compensation ala
+// Keyence IV series jika diaktifkan) sebelum dianalisa. ROI penuh (0,0,1,1)
+// = tidak di-crop, pakai frame utuh apa adanya (perilaku lama tetap sama).
+// =====================================================================
+function isFullFrameRoi(roi: Roi | undefined | null): boolean {
+  return !roi || (roi.x <= 0 && roi.y <= 0 && roi.width >= 1 && roi.height >= 1);
+}
+
+async function resolveWorkingImage(program: any, tool: any, rawCurrentBytes: Uint8Array): Promise<Uint8Array> {
+  const roi: Roi | undefined = tool.roi_config;
+  if (isFullFrameRoi(roi)) return rawCurrentBytes;
+
+  let effectiveRoi = roi as Roi;
+  const posCorrection = (roi as any)?.position_correction;
+  if (posCorrection?.enabled && program.master_image_url) {
+    try {
+      const masterBytes = await downloadReferenceBytes(program.master_image_url);
+      const margin = posCorrection.search_margin ?? 0.15;
+      const corrected = correctRoiPosition(masterBytes, rawCurrentBytes, effectiveRoi, margin);
+      effectiveRoi = corrected.roi;
+    } catch (err) {
+      // Position Compensation gagal (mis. gambar Mastering tidak terbaca) -> tetap
+      // pakai ROI asli daripada menggagalkan seluruh Tool.
+      console.error("Position Compensation gagal, pakai ROI asli:", (err as Error).message);
+    }
+  }
+
+  const currentImg = decodeImageToRgba(rawCurrentBytes);
+  const cropped = cropRgba(currentImg, effectiveRoi);
+  return encodeRgbaToJpeg(cropped);
+}
+
+// =====================================================================
 // AI TOOL: DIFFERENTIATE
 // =====================================================================
-async function runDifferentiate(tool: any, imageBase64: string) {
+async function runDifferentiate(tool: any, currentBytes: Uint8Array) {
   if (!tool.reference_image_url) {
     throw new Error("Tool Differentiate belum punya reference image (selesaikan Save Tools/Learn dahulu)");
   }
 
   const refBytes = await downloadReferenceBytes(tool.reference_image_url);
-  const currentBytes = base64ToUint8Array(imageBase64);
   const similarity = compareImages(refBytes, currentBytes);
 
   const minSimilarity = tool.threshold?.similarity_min ?? 0.85; // hasil Level Adjustment
@@ -266,13 +305,11 @@ async function runDifferentiate(tool: any, imageBase64: string) {
 // =====================================================================
 // AI TOOL: IDENTIFY (multi-referensi)
 // =====================================================================
-async function runIdentify(tool: any, imageBase64: string) {
+async function runIdentify(tool: any, currentBytes: Uint8Array) {
   const refs: { label: string; url: string }[] = tool.reference_image_urls ?? [];
   if (refs.length === 0) {
     throw new Error("Tool Identify butuh minimal 1 reference_image_urls (label + url)");
   }
-
-  const currentBytes = base64ToUint8Array(imageBase64);
 
   let bestLabel = "UNKNOWN";
   let bestScore = -1;
@@ -300,8 +337,8 @@ async function runIdentify(tool: any, imageBase64: string) {
 // =====================================================================
 // AI TOOL: COUNT / THROUGH COUNT
 // =====================================================================
-async function runCount(tool: any, imageBase64: string) {
-  const { detections, model } = await hfDetectObjects(imageBase64);
+async function runCount(tool: any, currentBytes: Uint8Array) {
+  const { detections, model } = await hfDetectObjects(currentBytes);
 
   const minScore = tool.threshold?.detection_min_score ?? 0.6;
   const filtered = detections.filter((d) => d.score >= minScore);
@@ -329,9 +366,8 @@ async function runCount(tool: any, imageBase64: string) {
 // =====================================================================
 // AI TOOL: OCR
 // =====================================================================
-async function runOCR(tool: any, imageBase64: string) {
-  const bytes = base64ToUint8Array(imageBase64);
-  const text = await runTesseractOCR(bytes);
+async function runOCR(tool: any, currentBytes: Uint8Array) {
+  const text = await runTesseractOCR(currentBytes);
 
   const expectedPattern: string | undefined = tool.threshold?.expected_pattern;
   let hasil: "OK" | "NG" | "UNKNOWN" = "UNKNOWN";
@@ -355,8 +391,8 @@ async function runOCR(tool: any, imageBase64: string) {
 // =====================================================================
 // AI TOOL: TRIGGER (deteksi kehadiran objek)
 // =====================================================================
-async function runTrigger(tool: any, imageBase64: string) {
-  const { detections, model } = await hfDetectObjects(imageBase64);
+async function runTrigger(tool: any, currentBytes: Uint8Array) {
+  const { detections, model } = await hfDetectObjects(currentBytes);
   const minScore = tool.threshold?.detection_min_score ?? 0.5;
   const present = detections.some((d) => d.score >= minScore);
 
@@ -366,6 +402,35 @@ async function runTrigger(tool: any, imageBase64: string) {
     count_value: detections.length,
     ocr_text: null,
     extra_data: { present, model },
+  };
+}
+
+// =====================================================================
+// AI TOOL: BARCODE / QR CODE
+// =====================================================================
+async function runBarcode(tool: any, currentBytes: Uint8Array) {
+  const decoded = readBarcodeOrQr(currentBytes);
+  const expectedPattern: string | undefined = tool.threshold?.expected_pattern;
+
+  let hasil: "OK" | "NG" | "UNKNOWN" = "UNKNOWN";
+  if (!decoded) {
+    hasil = "NG"; // tidak ada barcode/QR yang terbaca di ROI
+  } else if (expectedPattern) {
+    try {
+      hasil = new RegExp(expectedPattern).test(decoded.text) ? "OK" : "NG";
+    } catch {
+      hasil = "UNKNOWN";
+    }
+  } else {
+    hasil = "OK"; // berhasil terbaca, tanpa validasi pola spesifik
+  }
+
+  return {
+    hasil,
+    confidence: null,
+    count_value: null,
+    ocr_text: decoded?.text ?? null,
+    extra_data: { format: decoded?.format ?? null, engine: "zxing", expected_pattern: expectedPattern ?? null },
   };
 }
 
@@ -424,9 +489,8 @@ async function downloadReferenceBytes(path: string): Promise<Uint8Array> {
 }
 
 async function hfDetectObjects(
-  imageBase64: string,
+  bytes: Uint8Array,
 ): Promise<{ detections: { label: string; score: number }[]; model: string }> {
-  const bytes = base64ToUint8Array(imageBase64);
   const { result, model } = await hfRequestWithFallback(HF_MODELS.detection, bytes);
   return { detections: (result as any[]).map((r) => ({ label: r.label, score: r.score })), model };
 }

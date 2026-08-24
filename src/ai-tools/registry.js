@@ -4,6 +4,7 @@ import * as count from "./count/index.jsx";
 import * as throughCount from "./through_count/index.jsx";
 import * as ocr from "./ocr/index.jsx";
 import * as trigger from "./trigger/index.jsx";
+import * as barcode from "./barcode/index.jsx";
 
 /**
  * Registry modular AI Tools. Tambah tool baru cukup buat folder baru di ai-tools/<nama>
@@ -16,6 +17,7 @@ export const AI_TOOLS = {
   through_count: throughCount,
   ocr,
   trigger,
+  barcode,
 };
 
 export const AI_TOOL_LIST = Object.values(AI_TOOLS).map((mod) => mod.meta);

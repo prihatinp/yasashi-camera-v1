@@ -12,7 +12,11 @@ Customer For : PT. Yasashi Teknik (Yasashi Electric)
 - `docs/PROMPT_CLAUDE_CODE.md` — brief teknis untuk implementasi (dipakai sebagai instruksi awal Claude Code).
 - `docs/README_AI_INFERENCE.md` — panduan deploy & pemakaian Edge Function AI Inference.
 - `supabase/migrations/0001_init.sql` — skema database lengkap (tabel, enum, RLS, storage buckets).
-- `supabase/functions/ai-inference/index.ts` — Edge Function penghubung ke Hugging Face Inference API.
+- `supabase/migrations/0002_add_barcode_tool.sql` — tambah AI Tool "Barcode/QR" ke enum `ai_tool_type`
+  (jalankan sekali di Supabase SQL Editor, seperti migration 0001).
+- `supabase/functions/ai-inference/index.ts` — Edge Function AI Inference (perbandingan gambar
+  klasik untuk Differentiate/Identify, Tesseract.js untuk OCR, ZXing untuk Barcode/QR, Hugging
+  Face untuk object detection).
 
 ## Tech Stack
 - **Frontend**: React + Vite + Tailwind CSS → GitHub Pages

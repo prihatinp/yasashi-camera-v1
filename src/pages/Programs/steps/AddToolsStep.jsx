@@ -97,6 +97,8 @@ function AddToolForm({ program, masterUrl, organisasiId, nextOrder, onDone }) {
   const [learnMode, setLearnMode] = useState("manual");
   const [namaTool, setNamaTool] = useState("");
   const [roi, setRoi] = useState(FULL_ROI);
+  const [positionCorrection, setPositionCorrection] = useState(true);
+  const [searchMargin, setSearchMargin] = useState(0.15);
   const [references, setReferences] = useState([]); // untuk mode multi (Identify)
   const [refLabel, setRefLabel] = useState("OK");
   const [showPicker, setShowPicker] = useState(false);
@@ -149,13 +151,18 @@ function AddToolForm({ program, masterUrl, organisasiId, nextOrder, onDone }) {
         referenceImageUrls = references;
       }
 
+      const isFullFrame = roi.width >= 1 && roi.height >= 1;
+      const roiConfig = isFullFrame
+        ? roi
+        : { ...roi, position_correction: { enabled: positionCorrection, search_margin: searchMargin } };
+
       const { error: insertErr } = await supabase.from("program_tools").insert({
         program_id: program.id,
         ai_tool: aiTool,
         tool_order: nextOrder,
         nama_tool: namaTool || meta.label,
         learn_mode: learnMode,
-        roi_config: roi,
+        roi_config: roiConfig,
         reference_image_url: referenceImageUrl,
         reference_image_urls: referenceImageUrls,
         threshold: meta.defaultThreshold,
@@ -225,6 +232,40 @@ function AddToolForm({ program, masterUrl, organisasiId, nextOrder, onDone }) {
         <label className="label">Area ROI (relatif terhadap Mastering image)</label>
         <RoiDrawer imageUrl={masterUrl} roi={roi} onChange={setRoi} />
       </div>
+
+      {roi.width < 1 && roi.height < 1 && (
+        <div className="rounded-xl bg-gray-50 p-3 space-y-2">
+          <div className="flex items-center gap-2">
+            <input
+              id="position-correction"
+              type="checkbox"
+              checked={positionCorrection}
+              onChange={(e) => setPositionCorrection(e.target.checked)}
+            />
+            <label htmlFor="position-correction" className="text-sm">
+              🎯 Aktifkan Position Compensation (ala Keyence IV series) — kejar posisi objek kalau
+              sedikit bergeser dari saat Mastering
+            </label>
+          </div>
+          {positionCorrection && (
+            <div>
+              <label className="label">
+                Area Pencarian Tambahan ({Math.round(searchMargin * 100)}%) — makin besar, makin
+                toleran terhadap pergeseran, tapi makin lambat
+              </label>
+              <input
+                type="range"
+                min={0.05}
+                max={0.5}
+                step={0.05}
+                value={searchMargin}
+                onChange={(e) => setSearchMargin(Number(e.target.value))}
+                className="w-full accent-yasashi-green"
+              />
+            </div>
+          )}
+        </div>
+      )}
 
       {meta?.referenceMode === "multi" && (
         <div className="space-y-2">

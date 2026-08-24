@@ -17,13 +17,20 @@ import { Buffer } from "node:buffer";
 
 const COMPARE_SIZE = 64; // resize kedua gambar ke 64x64 sebelum dibandingkan
 
-interface RgbaImage {
+export interface RgbaImage {
   width: number;
   height: number;
   data: Uint8Array; // RGBA, 4 byte per pixel
 }
 
-function decodeImageToRgba(bytes: Uint8Array): RgbaImage {
+export interface Roi {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export function decodeImageToRgba(bytes: Uint8Array): RgbaImage {
   const isJpeg = bytes.length > 2 && bytes[0] === 0xff && bytes[1] === 0xd8;
   const isPng =
     bytes.length > 8 &&
@@ -47,20 +54,41 @@ function decodeImageToRgba(bytes: Uint8Array): RgbaImage {
 }
 
 /** Resize RGBA -> grayscale Float64Array ukuran tetap (nearest-neighbor, cukup untuk perbandingan kasar). */
-function toResizedGray(img: RgbaImage, size: number): Float64Array {
-  const out = new Float64Array(size * size);
-  for (let y = 0; y < size; y++) {
-    const srcY = Math.min(img.height - 1, Math.floor((y * img.height) / size));
-    for (let x = 0; x < size; x++) {
-      const srcX = Math.min(img.width - 1, Math.floor((x * img.width) / size));
+export function resizeToGray(img: RgbaImage, targetWidth: number, targetHeight: number): Float64Array {
+  const out = new Float64Array(targetWidth * targetHeight);
+  for (let y = 0; y < targetHeight; y++) {
+    const srcY = Math.min(img.height - 1, Math.floor((y * img.height) / targetHeight));
+    for (let x = 0; x < targetWidth; x++) {
+      const srcX = Math.min(img.width - 1, Math.floor((x * img.width) / targetWidth));
       const idx = (srcY * img.width + srcX) * 4;
       const r = img.data[idx];
       const g = img.data[idx + 1];
       const b = img.data[idx + 2];
-      out[y * size + x] = 0.299 * r + 0.587 * g + 0.114 * b;
+      out[y * targetWidth + x] = 0.299 * r + 0.587 * g + 0.114 * b;
     }
   }
   return out;
+}
+
+/** Crop RGBA berdasarkan ROI relatif (0..1), dikliping ke batas gambar. */
+export function cropRgba(img: RgbaImage, roi: Roi): RgbaImage {
+  const x0 = Math.max(0, Math.min(img.width - 1, Math.round(roi.x * img.width)));
+  const y0 = Math.max(0, Math.min(img.height - 1, Math.round(roi.y * img.height)));
+  const w = Math.max(1, Math.min(img.width - x0, Math.round(roi.width * img.width)));
+  const h = Math.max(1, Math.min(img.height - y0, Math.round(roi.height * img.height)));
+
+  const out = new Uint8Array(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    const srcRowStart = ((y0 + y) * img.width + x0) * 4;
+    out.set(img.data.subarray(srcRowStart, srcRowStart + w * 4), y * w * 4);
+  }
+  return { width: w, height: h, data: out };
+}
+
+/** Encode RGBA -> JPEG bytes, untuk hasil crop yang perlu dikirim ke Hugging Face / Tesseract. */
+export function encodeRgbaToJpeg(img: RgbaImage, quality = 85): Uint8Array {
+  const encoded = jpeg.encode({ data: img.data, width: img.width, height: img.height }, quality);
+  return new Uint8Array(encoded.data);
 }
 
 /** SSIM global (satu window = seluruh gambar) — cukup sensitif untuk deteksi beda pola/cacat. */
@@ -99,8 +127,8 @@ function ssim(a: Float64Array, b: Float64Array): number {
 export function compareImages(bytesA: Uint8Array, bytesB: Uint8Array): number {
   const imgA = decodeImageToRgba(bytesA);
   const imgB = decodeImageToRgba(bytesB);
-  const grayA = toResizedGray(imgA, COMPARE_SIZE);
-  const grayB = toResizedGray(imgB, COMPARE_SIZE);
+  const grayA = resizeToGray(imgA, COMPARE_SIZE, COMPARE_SIZE);
+  const grayB = resizeToGray(imgB, COMPARE_SIZE, COMPARE_SIZE);
   const score = ssim(grayA, grayB);
   // SSIM idealnya -1..1 (identik = 1); clamp ke 0..1 supaya konsisten dengan slider threshold UI.
   return Math.max(0, Math.min(1, score));
