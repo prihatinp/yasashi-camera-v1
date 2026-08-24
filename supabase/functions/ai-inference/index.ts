@@ -33,7 +33,10 @@ const HF_MODELS = {
   ocr: "microsoft/trocr-base-printed",     // OCR (image-to-text)
 };
 
-const HF_BASE_URL = "https://api-inference.huggingface.co/models";
+// api-inference.huggingface.co (legacy) sudah dimatikan Hugging Face — pakai
+// domain router baru mereka (Inference Providers), path "hf-inference" untuk
+// model yang di-serve langsung oleh HF sendiri (bukan provider pihak ketiga).
+const HF_BASE_URL = "https://router.huggingface.co/hf-inference/models";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*", // ganti ke domain GitHub Pages kamu di production
