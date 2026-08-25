@@ -37,3 +37,22 @@ export async function getSignedUrl(bucket, path, expiresIn = 3600) {
   }
   return data.signedUrl;
 }
+
+/** Fetch URL gambar -> dataURL base64 (untuk dikirim ke Edge Function ai-inference). */
+export async function urlToDataUrl(url) {
+  const res = await fetch(url);
+  const blob = await res.blob();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+/** Ambil gambar dari Image Library (captured_images.image_url) langsung sebagai dataURL. */
+export async function libraryImageToDataUrl(path) {
+  const url = await getSignedUrl("image-library", path);
+  if (!url) throw new Error("Gagal ambil gambar dari Image Library.");
+  return urlToDataUrl(url);
+}

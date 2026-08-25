@@ -5,6 +5,8 @@ import { useAuth } from "../../../context/AuthContext.jsx";
 import { getToolMeta, getToolThresholdForm } from "../../../ai-tools/registry";
 import CaptureBox from "../../../components/Camera/CaptureBox.jsx";
 import StatusBadge from "../../../components/StatusBadge.jsx";
+import ImagePickerModal from "../../../components/ImagePickerModal.jsx";
+import { libraryImageToDataUrl } from "../../../lib/storage";
 
 export default function LevelAdjustmentStep({ program, tools, onSaved }) {
   const savedTools = tools.filter((t) => t.is_saved);
@@ -70,11 +72,26 @@ function ToolThresholdCard({ tool, onSaved }) {
 }
 
 function LivePreviewTester({ program }) {
-  const { session } = useAuth();
+  const { session, profile } = useAuth();
+  const [inputMode, setInputMode] = useState("camera"); // "camera" | "library"
   const [frame, setFrame] = useState(null);
+  const [libraryPreviewUrl, setLibraryPreviewUrl] = useState(null);
+  const [showPicker, setShowPicker] = useState(false);
   const [result, setResult] = useState(null);
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState("");
+
+  async function handlePickFromLibrary(img) {
+    setError("");
+    try {
+      const dataUrl = await libraryImageToDataUrl(img.image_url);
+      setFrame(dataUrl);
+      setLibraryPreviewUrl(dataUrl);
+      setShowPicker(false);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
 
   async function handleTest() {
     if (!frame) return;
@@ -101,12 +118,48 @@ function LivePreviewTester({ program }) {
 
   return (
     <div className="rounded-xl bg-gray-50 p-4 space-y-3">
-      <p className="text-sm font-medium text-gray-600">Preview Live (opsional)</p>
-      <CaptureBox
-        source={program.camera_source}
-        streamUrl={program.camera_connection?.stream_url ?? ""}
-        onCapture={setFrame}
-      />
+      <p className="text-sm font-medium text-gray-600">Preview / Test (opsional)</p>
+
+      <div className="flex gap-2">
+        <button
+          type="button"
+          className={inputMode === "camera" ? "btn-primary flex-1 !py-1.5 text-sm" : "btn-secondary flex-1 !py-1.5 text-sm"}
+          onClick={() => {
+            setInputMode("camera");
+            setFrame(null);
+          }}
+        >
+          Live Kamera
+        </button>
+        <button
+          type="button"
+          className={inputMode === "library" ? "btn-primary flex-1 !py-1.5 text-sm" : "btn-secondary flex-1 !py-1.5 text-sm"}
+          onClick={() => {
+            setInputMode("library");
+            setFrame(null);
+          }}
+        >
+          Dari Image Library
+        </button>
+      </div>
+
+      {inputMode === "camera" ? (
+        <CaptureBox
+          source={program.camera_source}
+          streamUrl={program.camera_connection?.stream_url ?? ""}
+          onCapture={setFrame}
+        />
+      ) : (
+        <div className="space-y-2">
+          {libraryPreviewUrl && (
+            <img src={libraryPreviewUrl} alt="Gambar terpilih" className="w-40 rounded-lg border border-gray-200" />
+          )}
+          <button type="button" className="btn-secondary" onClick={() => setShowPicker(true)}>
+            {libraryPreviewUrl ? "Ganti Gambar" : "Pilih Gambar"}
+          </button>
+        </div>
+      )}
+
       <button className="btn-secondary" disabled={!frame || testing} onClick={handleTest}>
         {testing ? "AI Engine warming up..." : "Test dengan Frame Ini"}
       </button>
@@ -130,6 +183,14 @@ function LivePreviewTester({ program }) {
             ))}
           </ul>
         </div>
+      )}
+
+      {showPicker && (
+        <ImagePickerModal
+          organisasiId={profile.organisasi_id}
+          onSelect={handlePickFromLibrary}
+          onClose={() => setShowPicker(false)}
+        />
       )}
     </div>
   );

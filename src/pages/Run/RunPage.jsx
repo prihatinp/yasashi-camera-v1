@@ -9,7 +9,7 @@ import { sendResultToIoConfigs } from "../../lib/io.js";
 import CameraView from "../../components/Camera/CameraView.jsx";
 import ImagePickerModal from "../../components/ImagePickerModal.jsx";
 import StatusBadge from "../../components/StatusBadge.jsx";
-import { getSignedUrl } from "../../lib/storage";
+import { getSignedUrl, libraryImageToDataUrl } from "../../lib/storage";
 import NoOrgNotice from "../../components/NoOrgNotice.jsx";
 
 export default function RunPage() {
@@ -93,8 +93,7 @@ export default function RunPage() {
       try {
         let frame;
         if (inputMode === "library" && libraryImage) {
-          const url = await getSignedUrl("image-library", libraryImage.image_url);
-          frame = await urlToDataUrl(url);
+          frame = await libraryImageToDataUrl(libraryImage.image_url);
         } else {
           frame = captureFrame(imgRef);
         }
@@ -295,15 +294,4 @@ export default function RunPage() {
       )}
     </div>
   );
-}
-
-async function urlToDataUrl(url) {
-  const res = await fetch(url);
-  const blob = await res.blob();
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
 }
