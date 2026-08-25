@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { supabase } from "../../../lib/supabaseClient";
-import { describeFunctionError } from "../../../lib/functionsError";
+import { callAiInference } from "../../../lib/aiInference";
 import { useAuth } from "../../../context/AuthContext.jsx";
 import { getToolMeta, getToolThresholdForm } from "../../../ai-tools/registry";
 import CaptureBox from "../../../components/Camera/CaptureBox.jsx";
@@ -99,18 +99,15 @@ function LivePreviewTester({ program }) {
     setError("");
     setResult(null);
     try {
-      const { data, error } = await supabase.functions.invoke("ai-inference", {
-        body: {
-          program_id: program.id,
-          image_base64: frame,
-          trigger_source: "internal",
-          operator_id: session?.user?.id,
-        },
+      const data = await callAiInference({
+        program_id: program.id,
+        image_base64: frame,
+        trigger_source: "internal",
+        operator_id: session?.user?.id,
       });
-      if (error) throw error;
       setResult(data);
     } catch (err) {
-      setError(await describeFunctionError(err));
+      setError(err.message);
     } finally {
       setTesting(false);
     }

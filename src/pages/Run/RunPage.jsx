@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { supabase } from "../../lib/supabaseClient";
-import { describeFunctionError } from "../../lib/functionsError";
+import { callAiInference } from "../../lib/aiInference";
 import { useAuth } from "../../context/AuthContext.jsx";
 import { useCamera } from "../../hooks/useCamera.js";
 import { useWebSerial } from "../../hooks/useWebSerial.js";
@@ -99,15 +99,12 @@ export default function RunPage() {
         }
         if (!frame) throw new Error("Tidak ada frame untuk dianalisa.");
 
-        const { data, error } = await supabase.functions.invoke("ai-inference", {
-          body: {
-            program_id: program.id,
-            image_base64: frame,
-            trigger_source: triggerSource,
-            operator_id: session?.user?.id,
-          },
+        const data = await callAiInference({
+          program_id: program.id,
+          image_base64: frame,
+          trigger_source: triggerSource,
+          operator_id: session?.user?.id,
         });
-        if (error) throw error;
         setResult(data);
 
         const ioResults = await sendResultToIoConfigs(ioConfigs, data.hasil, {
@@ -116,7 +113,7 @@ export default function RunPage() {
         });
         setResult((prev) => ({ ...prev, ioResults }));
       } catch (err) {
-        setError(await describeFunctionError(err));
+        setError(err.message || "Gagal menjalankan AI Inference.");
       } finally {
         setRunning(false);
       }
