@@ -50,9 +50,32 @@ export async function urlToDataUrl(url) {
   });
 }
 
-/** Ambil gambar dari Image Library (captured_images.image_url) langsung sebagai dataURL. */
+/**
+ * Fetch URL gambar -> dataURL JPEG yang sudah dikecilkan ke maxWidth. Foto asli dari HP bisa
+ * beberapa MB / resolusi sangat besar — dikirim mentah ke Edge Function bisa bikin proses decode
+ * JPEG di server kehabisan resource (WORKER_RESOURCE_LIMIT). Capture langsung dari kamera sudah
+ * otomatis dikecilkan (lihat useCamera.captureFrame); gambar dari Image Library lewat sini juga
+ * disamakan.
+ */
+export async function urlToScaledDataUrl(url, maxWidth = 1024, quality = 0.85) {
+  const res = await fetch(url);
+  const blob = await res.blob();
+  const bitmap = await createImageBitmap(blob);
+
+  const scale = Math.min(1, maxWidth / bitmap.width);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close?.();
+
+  return canvas.toDataURL("image/jpeg", quality);
+}
+
+/** Ambil gambar dari Image Library (captured_images.image_url) sebagai dataURL, sudah dikecilkan. */
 export async function libraryImageToDataUrl(path) {
   const url = await getSignedUrl("image-library", path);
   if (!url) throw new Error("Gagal ambil gambar dari Image Library.");
-  return urlToDataUrl(url);
+  return urlToScaledDataUrl(url);
 }
