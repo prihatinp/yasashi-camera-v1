@@ -21,7 +21,9 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { createWorker } from "npm:tesseract.js@5.1.1";
 import { compareImages, cropRgba, decodeImageToRgba, encodeRgbaToJpeg, type Roi } from "./imageSimilarity.ts";
 import { correctRoiPosition } from "./positionCorrection.ts";
-import { readBarcodeOrQr } from "./barcodeReader.ts";
+// barcodeReader.ts (ZXing) di-import dinamis (lazy) di dalam runBarcode(), bukan di sini —
+// supaya kalau library itu gagal dimuat, hanya Tool Barcode yang kena, bukan seluruh
+// Edge Function (semua Tool lain gagal ikut error kalau import top-level ini bermasalah).
 
 // ---------------------------------------------------------------------
 // KONFIGURASI
@@ -409,6 +411,7 @@ async function runTrigger(tool: any, currentBytes: Uint8Array) {
 // AI TOOL: BARCODE / QR CODE
 // =====================================================================
 async function runBarcode(tool: any, currentBytes: Uint8Array) {
+  const { readBarcodeOrQr } = await import("./barcodeReader.ts");
   const decoded = readBarcodeOrQr(currentBytes);
   const expectedPattern: string | undefined = tool.threshold?.expected_pattern;
 
